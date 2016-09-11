@@ -84,9 +84,9 @@ function addon_mt:addDiagnostic(desc, func)
 
 	local function reportError(error)
 		local path = string.GetFileFromFilename(debug.getinfo(func, 'S').short_src)
-		self:_recordError("TEST FATAL ERROR in " .. path .. ': ' .. tostring(error))
+		self:_recordError("TEST FATAL ERROR in " .. tostring(error))
 		self.fatalErrors = self.fatalErrors + 1
-		table.insert(self.recentErrors, path ..': ' .. error)
+		self:addRecentError(error)
 	end
 
 	timer.Simple(0.01, function()
@@ -108,8 +108,7 @@ end
 function addon_mt:pcall(func, ...)
 	local status, error = pcall(func, ...)
 	if not status then
-		local prefix = printPrefix()
-		self:_recordError(printPrefix() .. ' - '..tostring(error))
+		self:_recordError('PCALL ERROR: '..tostring(error))
 		ErrorNoHalt(error)
 	end
 end
@@ -135,12 +134,7 @@ end
 function addon_mt:_recordError(line, isFatal)
 	file.Append(self.logfile, formattedDate() .. ' - ' .. line..'\n\n')
 
-	table.insert(self.recentErrors, 1, line)
-	if #self.recentErrors > RECENT_ERRORS_TO_KEEP then
-		if not self.recentErrors[RECENT_ERRORS_TO_KEEP + 1]:find('FATAL ERROR') then
-			self.recentErrors[RECENT_ERRORS_TO_KEEP + 1] = nil
-		end
-	end
+	self:_addRecentError(line)
 
 	if SERVER and self.analytics then
 		http.Post(ANALYTICS_ENDPOINT .. 'error', {
@@ -149,6 +143,15 @@ function addon_mt:_recordError(line, isFatal)
 		}, function() end, function(errorMessage)
 			self:print("analytics failed to report fatal error. code: " .. errorMessage)
 		end)
+	end
+end
+
+function addon_mt:_addRecentError(error)
+	table.insert(self.recentErrors, 1, line)
+	if #self.recentErrors > RECENT_ERRORS_TO_KEEP then
+		if not self.recentErrors[RECENT_ERRORS_TO_KEEP + 1]:find('FATAL ERROR') then
+			self.recentErrors[RECENT_ERRORS_TO_KEEP + 1] = nil
+		end
 	end
 end
 
