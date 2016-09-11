@@ -9,6 +9,14 @@ file.CreateDir(datadir)
 
 pfoolproof.addons = {}
 
+pfoolproof.versionStringToNumber = function(version)
+	local versionNumber = 0
+	for k, v in ipairs(string.Explode('.', version, false)) do
+		versionNumber = versionNumber * 100 + tonumber(v)
+	end
+	return versionNumber
+end
+
 -- HELPER FUNCTIONS
 local function formattedDate()
 	return os.date("%Y-%m-%d - h%Hm%Ms%S")
@@ -733,17 +741,4 @@ elseif CLIENT then
 			end
 		end)
 	end
-end
-
-
-if SERVER then
-	local testAddon = pfoolproof.registerAddon('Test Addon')
-	local testAddon = pfoolproof.registerAddon('Test Addon 2')
-	testAddon:addDiagnostic('Check Stylish Dependency', function(callback)
-		callback(sty ~= nil)
-	end)
-
-	testAddon:print("a print message")
-	testAddon:error("a really really really really really really really really really really really really really really really really really really long test error")
-	testAddon:fatalError("a test fatal error")
 end
