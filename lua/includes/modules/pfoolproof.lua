@@ -1,6 +1,9 @@
+if SERVER then AddCSLuaFile() end
+
 -- INITIALIZATION
 local RECENT_ERRORS_TO_KEEP = 10
 local LOG_FILES_TO_KEEP = 8
+local ANALYTICS_ENDPOINT = 'http://analytics.lastpengu.in/api/'
 
 pfoolproof = {}
 
@@ -24,6 +27,19 @@ end
 
 local function formattedTime()
 	return os.date("h%Hm%Ms%S")
+end
+
+local function game_GetIP()
+	local hostip = GetConVarString( "hostip" ) -- GetConVarNumber is inaccurate
+	hostip = tonumber( hostip )
+
+	local ip = {}
+	ip[ 1 ] = bit.rshift( bit.band( hostip, 0xFF000000 ), 24 )
+	ip[ 2 ] = bit.rshift( bit.band( hostip, 0x00FF0000 ), 16 )
+	ip[ 3 ] = bit.rshift( bit.band( hostip, 0x0000FF00 ), 8 )
+	ip[ 4 ] = bit.band( hostip, 0x000000FF )
+
+	return table.concat( ip, "." )
 end
 
 local src_name_cache = {}
@@ -65,6 +81,43 @@ function addon_mt:addDiagnostic(desc, func)
 		howToFix = howToFix,
 		func = func
 	})
+
+	local function reportError(error)
+		local path = string.GetFileFromFilename(debug.getinfo(func, 'S').short_src)
+		self:_recordError("TEST FATAL ERROR in " .. path .. ': ' .. tostring(error))
+		self.fatalErrors = self.fatalErrors + 1
+		table.insert(self.recentErrors, path ..': ' .. error)
+	end
+
+	timer.Simple(0.01, function()
+		local succ, error = pcall(func, function(succ)
+			if not succ then
+				reportError(tostring(error))
+			end
+		end)
+		if not succ then
+			reportError(tostring(error))
+		end
+	end)
+end
+
+function addon_mt:setAnalytics(_bool)
+	self.analytics = _bool
+end
+
+function addon_mt:pcall(func, ...)
+	local status, error = pcall(func, ...)
+	if not status then
+		local prefix = printPrefix()
+		self:_recordError(printPrefix() .. ' - '..tostring(error))
+		ErrorNoHalt(error)
+	end
+end
+
+function addon_mt:assert(boolean, message)
+	if not boolean then
+		self:_recordError('FATAL ERROR ASSERT FAILURE in ' .. printPrefix() .. ': ' .. tostring(message))
+	end
 end
 
 function addon_mt:print(...)
@@ -73,14 +126,14 @@ function addon_mt:print(...)
 		MsgC(Color(220, 220, 220), '[')
 		MsgC(color_white, self.addonName)
 		MsgC(Color(220, 220, 220), ']')
-		print(prefix .. ' ', ...)
+		print(...)
 	end
 	local line = table.concat({prefix .. ' ', ...}, ' ')
 	file.Append(self.logfile, formattedDate() .. ' - ' .. line..'\n\n')
 end
 
-function addon_mt:_recordError(line)
-	file.Append(self.logfile, line..'\n\n')
+function addon_mt:_recordError(line, isFatal)
+	file.Append(self.logfile, formattedDate() .. ' - ' .. line..'\n\n')
 
 	table.insert(self.recentErrors, 1, line)
 	if #self.recentErrors > RECENT_ERRORS_TO_KEEP then
@@ -88,23 +141,33 @@ function addon_mt:_recordError(line)
 			self.recentErrors[RECENT_ERRORS_TO_KEEP + 1] = nil
 		end
 	end
+
+	if SERVER and self.analytics then
+		http.Post(ANALYTICS_ENDPOINT .. 'error', {
+			ServerIP = game_GetIP(),
+			error = line,
+		}, function() end, function(errorMessage)
+			self:print("analytics failed to report fatal error. code: " .. errorMessage)
+		end)
+	end
 end
 
 function addon_mt:error(...)
 	local prefix = printPrefix()
-	local line = table.concat({formattedDate() .. ' - ERROR ' .. prefix .. ' ', ...}, ' ')
+	local line = table.concat({'ERROR in ' .. prefix .. ': ', ...}, ' ')
+
 	self.errors = self.errors + 1
-	self:_recordError(line)
+	self:_recordError(line, false)
 
 	error(...)
 end
 
 function addon_mt:fatalError(...)
 	local prefix = printPrefix()
-	local line = table.concat({formattedDate() .. ' - FATAL ERROR: ' .. prefix .. ' ', ...}, ' ')
+	local line = table.concat({'FATAL ERROR in ' .. prefix .. ': ', ...}, ' ')
 
 	self.fatalErrors = self.fatalErrors + 1
-	self:_recordError(line)
+	self:_recordError(line, true)
 
 	error(...)
 end
@@ -129,7 +192,7 @@ function pfoolproof.registerAddon(addonName, version)
 		errors = 0,
 		fatalErrors = 0,
 		recentErrors = {},
-		debug = true,
+		analytics = false,
 	}, addon_mt)
 
 	-- logs the last 5 sessions
@@ -141,8 +204,17 @@ function pfoolproof.registerAddon(addonName, version)
 	table.insert(pfoolproof.addons, addon)
 
 	if version then
-		self:print("ADDON VERSION: " .. version)
+		addon:print("ADDON VERSION: " .. version)
 	end
+
+	timer.Simple(10, function()
+		if addon.analytics then
+			http.Post('', {
+				serverIp = game_GetIP(),
+				hostname = GetHostName()
+			})
+		end
+	end)
 
 	return addon
 end
@@ -154,13 +226,14 @@ local COMMANDID_FETCH_LOGFILE = 4
 local COMMANDID_SHOW_LOGFILE = 5
 local COMMANDID_FETCH_LOGFILE = 6
 local COMMANDID_RUN_TEST = 7
-local COMMANDID_TEST_ = 8
+local COMMANDID_TEST_RESULT = 8
 
 if SERVER then
 	util.AddNetworkString('pfoolproof.command')
 
 	-- COMMAND LAYER
 	local function sendOpenMenu(pl)
+		print(pl:Name() .. ' opened the pfoolproof diagnostic menu.')
 		net.Start('pfoolproof.command')
 		net.WriteUInt(COMMANDID_SHOW_MENU, 32)
 
@@ -262,18 +335,17 @@ if SERVER then
 		end
 		local status, error = pcall(test.func, function(result)
 			net.Start('pfoolproof.command')
-			net.WriteUInt(COMMANDID_TEST_RESULT, 32)
-			net.WriteUInt(testIndex, 32)
-			net.WriteUInt(result and 1 or 0, 8)
+				net.WriteUInt(COMMANDID_TEST_RESULT, 32)
+				net.WriteUInt(testIndex, 32)
+				net.WriteUInt(result and 1 or 0, 8)
 			net.Send(pl)
 		end)
 		if not status then
 			net.Start('pfoolproof.command')
-			net.WriteUInt(COMMANDID_TEST_RESULT, 32)
-			net.WriteUInt(testIndex, 32)
-			net.WriteUInt(0, 8)
+				net.WriteUInt(COMMANDID_TEST_RESULT, 32)
+				net.WriteUInt(testIndex, 32)
+				net.WriteUInt(0, 8)
 			net.Send(pl)
-			addon:error("TEST FAILURE: " .. error)
 		end
 	end
 
@@ -289,7 +361,6 @@ elseif CLIENT then
 	local menu
 	local addons = {}
 	local testPanels = nil
-
 
 	local function commandCloseMenu()
 		if IsValid(menu) then menu:Remove() end
@@ -334,8 +405,24 @@ elseif CLIENT then
 
 		for k, addon in ipairs(addons) do
 			local addonRow = vgui.Create('pfpmenu_row', panel)
-			addonRow:SetText(addon.addonName)
-			addonRow:AddText('v'..addon.version, 'right')
+			addonRow:SetTall(30)
+			local addonName = addonRow:SetText(addon.addonName)
+			addonName:SetFont('foolproof_20px')
+			addonName:SizeToContents()
+			addonName:CenterVertical()
+			local errorText = addonRow:AddText('errors: ' .. addon.errors .. '  fatal errors: ' .. addon.fatalErrors, 'right')
+			errorText:SetPos(addonRow:GetWide() - 200, 0)
+			errorText:CenterVertical()
+
+			if addon.fatalErrors > 0 then
+				addonRow:SetTint(Color(255, 0, 0))
+			elseif addon.errors > 0 then
+				addonRow:SetTint(Color(255, 255, 0))
+			else
+				addonRow:SetTint(Color(0, 255, 0))
+			end
+			local versionText = addonRow:AddText('v' .. addon.version, 'right')
+
 			addonRow.DoClick = function(self)
 				print("fetching addon " .. addon.addonName)
 				commandFetchAddon(addon)
@@ -396,6 +483,10 @@ elseif CLIENT then
 			end
 		end
 
+		local p = vgui.Create('DPanel', panel)
+		p:SetAlpha(0)
+		p:SetTall(20)
+
 		-- show diagnostic tests
 		testPanels = {}
 		local infoRow = vgui.Create('pfpmenu_row', panel)
@@ -429,6 +520,10 @@ elseif CLIENT then
 			table.insert(testPanels, messageRow)
 		end
 		infoRow:DoClick()
+
+		local p = vgui.Create('DPanel', panel)
+		p:SetAlpha(0)
+		p:SetTall(20)
 
 		-- log files
 		local infoRow = vgui.Create('pfpmenu_row', panel)
@@ -487,7 +582,6 @@ elseif CLIENT then
 
 	net.Receive('pfoolproof.command', function()
 		local command = net.ReadUInt(32)
-		print("pfoolproof command " .. command)
 		commands[command]()
 	end)
 
@@ -499,8 +593,8 @@ elseif CLIENT then
 		font = 'Roboto',
 	})
 
-	surface.CreateFont('foolproof_14px', {
-		size = 14,
+	surface.CreateFont('foolproof_16px', {
+		size = 16,
 		weight = 200,
 		font = 'Roboto',
 	})
@@ -665,7 +759,7 @@ elseif CLIENT then
 
 		AddText = function(self, text, align)
 			local label = Label(text, self)
-			label:SetFont('foolproof_18px')
+			label:SetFont('foolproof_16px')
 			label:SizeToContents()
 			if not align or align == 'center' then
 				label:Center()
@@ -689,7 +783,7 @@ elseif CLIENT then
 			end
 
 			local label = Label(text, panel)
-			label:SetFont('foolproof_18px')
+			label:SetFont('foolproof_16px')
 			label:SizeToContents()
 			label:Center()
 
@@ -724,21 +818,9 @@ elseif CLIENT then
 	})
 
 	-- BOOTSTRAP
-	local function bootstrap()
-		if not LocalPlayer():IsSuperAdmin() then return end
-
-		timer.Simple(10, function()
-			LocalPlayer():ConCommand('pfoolproof check')
-		end)
-	end
-
-	if IsValid(LocalPlayer()) then
-		bootstrap()
-	else
-		hook.Add('OnEntityCreated', 'sty.WaitForLocalPlayer', function(ent)
-			if ent == LocalPlayer() then
-				bootstrap()
-			end
-		end)
-	end
+	timer.Simple(30, function()
+		if LocalPlayer():IsSuperAdmin() then
+			LocalPlayer():ConCommand('pfoolproof check\n')
+		end
+	end)
 end
