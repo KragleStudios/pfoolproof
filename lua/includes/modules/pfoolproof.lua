@@ -1,4 +1,5 @@
 if SERVER then AddCSLuaFile() end
+print("loading pfoolproof by thelastpenguin")
 
 -- INITIALIZATION
 local RECENT_ERRORS_TO_KEEP = 10
@@ -32,6 +33,7 @@ end
 local function game_GetIP()
 	local hostip = GetConVarString( "hostip" ) -- GetConVarNumber is inaccurate
 	hostip = tonumber( hostip )
+	if not hostip then return 'single player' end
 
 	local ip = {}
 	ip[ 1 ] = bit.rshift( bit.band( hostip, 0xFF000000 ), 24 )
@@ -138,6 +140,8 @@ function addon_mt:_recordError(line, isFatal)
 
 	if SERVER and self.analytics then
 		http.Post(ANALYTICS_ENDPOINT .. 'error', {
+			addon = self.addonName,
+			version = self.version,
 			ServerIP = game_GetIP(),
 			error = line,
 		}, function() end, function(errorMessage)
@@ -211,11 +215,15 @@ function pfoolproof.registerAddon(addonName, version)
 	end
 
 	timer.Simple(10, function()
-		if addon.analytics then
-			http.Post('', {
+		if SERVER and addon.analytics then
+			http.Post(ANALYTICS_ENDPOINT .. 'server', {
+				addon = addon.addonName,
+				version = addon.version,
 				serverIp = game_GetIP(),
 				hostname = GetHostName()
-			})
+			}, function() end, function(error)
+				addon:print("analytics failed to report hostname and ipaddress " .. error)
+			end)
 		end
 	end)
 
@@ -822,6 +830,7 @@ elseif CLIENT then
 
 	-- BOOTSTRAP
 	timer.Simple(30, function()
+		if not IsValid(LocalPlayer()) or not LocalPlayer().IsSuperAdmin then return end
 		if LocalPlayer():IsSuperAdmin() then
 			LocalPlayer():ConCommand('pfoolproof check\n')
 		end
