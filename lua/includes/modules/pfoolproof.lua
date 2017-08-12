@@ -1,6 +1,8 @@
 if SERVER then AddCSLuaFile() end
 print("loading pfoolproof by thelastpenguin")
 
+local pcall = pcall
+
 -- INITIALIZATION
 local RECENT_ERRORS_TO_KEEP = 10
 local LOG_FILES_TO_KEEP = 8
@@ -113,6 +115,7 @@ function addon_mt:pcall(func, ...)
 		self:_recordError('PCALL ERROR: '..tostring(error))
 		ErrorNoHalt(error)
 	end
+	return status, error
 end
 
 function addon_mt:assert(boolean, message)
