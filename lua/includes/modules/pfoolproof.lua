@@ -50,10 +50,7 @@ local src_name_cache = {}
 local function printPrefix(depth)
 	-- finds the file name and line number of the function 3 calls above in the stack
 	local src = debug.getinfo(depth or 3, 'S')
-	if not src_name_cache[src.short_src] then
-		src_name_cache[src.short_src] = string.GetFileFromFilename(src.short_src)
-	end
-	return src_name_cache[src.short_src] .. ':' .. src.linedefined .. ' '
+	return src.short_src .. ':' .. src.linedefined .. ' '
 end
 
 local function cleanupOldFiles(path, number)
@@ -87,10 +84,11 @@ function addon_mt:addDiagnostic(desc, func)
 	})
 
 	local function reportError(error)
-		local path = string.GetFileFromFilename(debug.getinfo(func, 'S').short_src)
-		self:_recordError("TEST FATAL ERROR in " .. tostring(error))
+		--local path = string.GetFileFromFilename(debug.getinfo(func, 'S').short_src)
+		local line = "DIAGNOSTIC '" .. desc .. "' ENCOUNTERED FATAL ERROR: " .. tostring(error)
+		self:_recordError(line)
 		self.fatalErrors = self.fatalErrors + 1
-		self:addRecentError(error)
+		self:_addRecentError(error)
 	end
 
 	timer.Simple(0.01, function()
@@ -154,7 +152,7 @@ function addon_mt:_recordError(line, isFatal)
 end
 
 function addon_mt:_addRecentError(error)
-	table.insert(self.recentErrors, 1, line)
+	table.insert(self.recentErrors, 1, error)
 	if #self.recentErrors > RECENT_ERRORS_TO_KEEP then
 		if not self.recentErrors[RECENT_ERRORS_TO_KEEP + 1]:find('FATAL ERROR') then
 			self.recentErrors[RECENT_ERRORS_TO_KEEP + 1] = nil
@@ -194,7 +192,7 @@ function pfoolproof.registerAddon(addonName, version)
 
 	local addon = setmetatable({
 		addonName = addonName,
-		version = verson or '0.0.0',
+		version = version or '0.0.0',
 		diagnosticTests = {},
 		datadir = addonDataDir,
 		logdir = addonLogsDir,
